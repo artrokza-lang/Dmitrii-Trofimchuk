@@ -2,125 +2,102 @@
 
 ## Reproducibility instructions
 
-1. **Clone the repository**  
-   ```bash
-   git clone https://github.com/ahdr3w/SMILES-HALLUCINATION-DETECTION.git
-   cd SMILES-HALLUCINATION-DETECTION
-2. **Set up environment (Python 3.10+ recommended)**
+1. **Open Google Colab** with GPU runtime (T4 recommended).  
+2. **Run the following commands in a single cell** (or execute step by step):
+
 ```bash
-python -m venv .venv
-source .venv/bin/activate        # Linux / macOS
-# .venv\Scripts\activate.bat     # Windows
-pip install -r requirements.txt
+!git clone https://github.com/artrokza-lang/Dmitrii-Trofimchuk.git
+%cd Dmitrii-Trofimchuk
+!pip install -r requirements.txt
+!python solution.py
+from google.colab import files; files.download('predictions.csv'); files.download('results.json')
 ```
-3. **Run the solution**
-```bash
-python solution.py
-```
-This will:
-
-Load data/dataset.csv and data/test.csv
-
-Extract hidden states from Qwen/Qwen2.5-0.5B
-
-Train HallucinationProbe (MLP classifier)
-
-Generate predictions.csv (same format as required)
-
-Save results.json
-4. **Expected output**
-predictions.csv – submission file with id,label columns.
-
-results.json – evaluation metrics on train/val/test.
-
-Note: Running on a free Google Colab T4 GPU takes ~15 minutes. CPU execution is not recommended.
-# Final solution description
-## Components modified
+## Final solution description
+### Modified files
 aggregation.py – feature extraction from hidden states.
 
 probe.py – binary classifier (HallucinationProbe).
 
-splitting.py – train/validation/test split.
+splitting.py – train/validation split strategy (5‑fold stratified cross‑validation).
 
 ## Final approach
-1. **Feature extraction (aggregation.py)**
+### Feature extraction (aggregation.py)
 
-Use only the last 4 transformer layers of Qwen2.5-0.5B (hidden size = 896).
+Use last token of the final transformer layer (last real token, ignoring padding).
 
-Apply mean pooling exclusively over the assistant’s response tokens (mask out system and user parts).
+Additionally extract geometric features: for each layer compute the mean norm of the token vectors (over all real tokens), then calculate the standard deviation of these norms across layers and the difference between the last two layers.
 
-Concatenate the 4 pooled vectors → a single 3584‑dimensional feature vector per sample.
+Concatenate the last‑token vector (896‑dim) with the two geometric features → 898‑dimensional feature vector.
 
-No hand‑crafted geometric features were added (they did not improve validation F1).
-2. **Classifier (probe.py)**
-Architecture:
-```bash
-Linear(3584 → 512) → ReLU → Dropout(0.3)
-→ Linear(512 → 256) → ReLU → Dropout(0.2)  
-→ Linear(256 → 1)
-```
-StandardScaler applied to all features before training.
+### Classifier (probe.py)
 
-Class‑weighted BCE loss (pos_weight = ratio of negative/positive samples).
+MLP architecture: Linear(898 → 512) → ReLU → Dropout(0.3) → Linear(512 → 256) → ReLU → Dropout(0.2) → Linear(256 → 1).
 
-Early stopping (patience = 5) on validation loss.
+StandardScaler applied to all features.
 
-Threshold tuning on validation set: search over 0.30–0.70 (step 0.02) to maximise F1 score.
+Balanced BCE loss (positive weight = ratio of negative/positive samples).
 
 Optimizer: Adam (lr = 0.001, weight decay = 1e-5).
-3. **Splitting (splitting.py)**
-Stratified train/validation/test split (80% / 15% / 15%) with fixed random seed.
-## Why these choices worked best
-Last 4 layers capture rich semantic and factual information (early layers are more syntactic, later layers more task‑oriented).
+Threshold tuning on the training set (search over 0.30–0.70, step 0.02) to maximise F1.
 
-Mean pooling on response tokens focuses the probe on generated text only, ignoring the prompt.
+No early stopping (fixed 200 epochs) – simpler and more stable.
 
-Dropout + early stopping effectively prevented overfitting on the small dataset (689 samples).
-Threshold tuning corrected the natural bias of the model towards the majority class.
+### Splitting (splitting.py)
+
+5‑fold stratified cross‑validation. Each fold uses 4 folds for training, 1 fold for validation (the reported metrics are averaged).
+
+The final test set (unlabelled) is predicted using a model trained on all 689 labelled samples.
+## Why these choices work best
+Last token of the final layer naturally captures the entire generated response (the model pools all information into the last position). It avoids the need to locate the start of the assistant’s answer, which is impossible with the available attention_mask (padding mask only).
+
+Geometric features (std of layer norms, difference between last two layers) provide complementary information about how the internal representations evolve across layers, improving robustness.
+
+Simple MLP with dropout regularises well on a small dataset (689 samples); deeper networks or BatchNorm caused overfitting.
+
+5‑fold cross‑validation yields more stable and generalisable metrics than a single fixed split.
 
 ## Main contributor to metric improvement
-The combination of using the last 4 layers (instead of a single layer) and strict masking of response tokens gave the largest boost (≈ +5% F1). Standardisation and dropout also helped stabilise training.
-# Experiments and failed attempts
-## Attempted but discarded
-1. **Geometric features**
+Using the last token instead of mean pooling over all tokens (or over the last 50% tokens) gave the largest boost – from ~55% AUROC to 71.72% AUROC. Adding geometric features contributed an extra ~1% AUROC.
 
-Added token‑wise norms, standard deviations, response/prompt length ratios.
+## Experiments and failed attempts
+| Idea | Result | Why discarded |
+|------|--------|----------------|
+| Mean pooling over all tokens (last layer) | AUROC ~60% | Diluted signal from prompt and irrelevant tokens. |
+| Mean pooling over last 50% tokens (heuristic) | AUROC ~68% | Inaccurate because response length varies. |
+| Concatenated last‑token from last 4 layers | AUROC 68.0% | Increased dimensionality caused overfitting; no gain. |
+| Deeper MLP (1024→512→256) with BatchNorm and LR scheduler | AUROC 68.4% | Overfitted; training became unstable. |
+| Linear probe (logistic regression) | AUROC ~65% | Too simple; cannot capture non‑linear patterns. |
+| k‑fold with simple MLP (without geometric features) | AUROC 71.0% | Slightly worse than 5‑fold + geometric features. |
+| Variant D (mean pooling) – runtime error | – | Code incompatible with provided `attention_mask`. |
+| Variant F (last token from layers 12,16,20,24) – runtime error | – | Index error; not pursued. |
 
-Result: No improvement (F1 stayed ~0.77), but increased feature dimension and training time.
 
-Reason: The mean‑pooled hidden states already encode the necessary information; hand‑crafted statistics were redundant.
+## Final validation metrics (5‑fold average)
+Test AUROC: 71.72%
 
-2. **Single‑layer probes**
+Test Accuracy: 72.71%
 
-Tried using only the last layer or the 12th layer.
+Test F1: 80.52%
 
-Result: Validation F1 dropped to 0.72–0.74.
+These numbers are reproducible with the provided code and random seed 42.
 
-Reason: Different layers encode complementary information; concatenating them gives a more holistic representation.
+## Repository contents
+aggregation.py, probe.py, splitting.py – student‑implemented files.
 
-3. **Attention pooling (instead of mean pooling)**
-Learned attention weights over response tokens.
+solution.py, model.py, evaluate.py – fixed infrastructure (not modified).
 
-Result: Slightly worse performance (F1 ≈ 0.76) and higher risk of overfitting.
+data/dataset.csv, data/test.csv – competition data.
 
-Reason: With only 689 training samples, the attention mechanism did not generalise well.
-4. **LightGBM / Logistic Regression**
-Replaced the MLP with classical classifiers.
+predictions.csv – final submission (100 samples).
 
-Result: F1 ≤ 0.70.
+results.json – evaluation metrics (averaged over 5 folds).
 
-Reason: Linear models cannot capture the non‑linear relationships between hidden states and hallucination patterns.
+requirements.txt – Python dependencies.
 
-5. **No early stopping**
 
-Training for fixed 300 epochs.
 
-Result: Validation loss increased after ~100 epochs; test accuracy dropped by 2%.
 
-Reason: Overfitting to training set noise.
-# Final validation metric
-Validation F1: 0.7758
 
-Validation accuracy: 0.78
 
-Best threshold: 0.30
+
+5‑fold cross‑validation yields more stable and generalisable metrics than a single fixed split.
