@@ -12,6 +12,12 @@
 !python solution.py
 from google.colab import files; files.download('predictions.csv'); files.download('results.json')
 ```
+or
+
+**Open the provided Google Colab notebook** (GPU runtime recommended):  
+   [https://colab.research.google.com/drive/1tWCZDx2UBfgo1-4EjIMbh4_qIIZoQ9si?usp=sharing](https://colab.research.google.com/drive/1tWCZDx2UBfgo1-4EjIMbh4_qIIZoQ9si?usp=sharing)
+and **run all cells**.
+
 ## Final solution description
 ### Modified files
 aggregation.py – feature extraction from hidden states.
@@ -94,10 +100,11 @@ results.json – evaluation metrics (averaged over 5 folds).
 
 requirements.txt – Python dependencies.
 
-
-
-
-
-
-
 5‑fold cross‑validation yields more stable and generalisable metrics than a single fixed split.
+
+## Submission files
+GitHub repository: https://github.com/artrokza-lang/Dmitrii-Trofimchuk
+
+Predictions CSV (cloud storage): https://disk.yandex.ru/d/-W1kl_r5TWcDyQ
+
+Google Colab notebook: https://colab.research.google.com/drive/1tWCZDx2UBfgo1-4EjIMbh4_qIIZoQ9si?usp=sharing
