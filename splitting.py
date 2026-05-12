@@ -1,37 +1,27 @@
 """
-splitting.py — Train / validation / test split utilities (student-implementable).
+splitting.py — 5‑fold stratified cross‑validation split
 """
 
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold
 
 def split_data(
     y: np.ndarray,
-    df=None,                     # kept for compatibility, not used
-    test_size: float = 0.15,
-    val_size: float = 0.15,
+    df=None,
+    test_size: float = 0.15,   # not used directly, kept for compatibility
+    val_size: float = 0.15,    # not used directly
     random_state: int = 42,
 ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
     """
-    Perform a single stratified split into train, validation, and test sets.
-
-    Returns:
-        List containing one tuple (train_indices, val_indices, test_indices)
+    Returns a list of 5 train/val/test splits (k‑fold without a separate test set).
+    For each fold, we use 4 folds for training and 1 fold for validation.
+    The final test set (unlabelled) will be predicted using the model trained on the full dataset,
+    so the split here only affects the reported validation metrics.
     """
-    idx = np.arange(len(y))
-
-    # First separate test set
-    idx_train_val, idx_test = train_test_split(
-        idx, test_size=test_size, random_state=random_state, stratify=y
-    )
-
-    # Then split the remaining into train and validation
-    relative_val = val_size / (1.0 - test_size)   # proportion within train+val
-    idx_train, idx_val = train_test_split(
-        idx_train_val,
-        test_size=relative_val,
-        random_state=random_state,
-        stratify=y[idx_train_val]
-    )
-
-    return [(idx_train, idx_val, idx_test)]
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+    splits = []
+    for train_index, val_index in skf.split(np.zeros(len(y)), y):
+        # In this scheme, there is no separate test split; we treat val as the evaluation split.
+        # We'll set test_index = val_index (so metrics are reported on val).
+        splits.append((train_index, val_index, val_index))
+    return splits
