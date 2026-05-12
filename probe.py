@@ -1,5 +1,5 @@
 """
-probe.py — HallucinationProbe binary classifier (student-implemented).
+probe.py — MLP classifier with threshold tuning
 """
 
 import numpy as np
@@ -8,14 +8,13 @@ import torch.nn as nn
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import f1_score
 
+
 class HallucinationProbe(nn.Module):
     def __init__(self):
         super().__init__()
         self._net = None
         self._scaler = StandardScaler()
         self._threshold = 0.5
-        self._val_X = None
-        self._val_y = None
 
     def _build_network(self, input_dim: int):
         self._net = nn.Sequential(
@@ -40,71 +39,39 @@ class HallucinationProbe(nn.Module):
         X_t = torch.from_numpy(X_scaled).float()
         y_t = torch.from_numpy(y.astype(np.float32))
 
+        # Positive weight to balance classes
         pos_weight = torch.tensor([(len(y) - y.sum()) / (y.sum() + 1e-8)])
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         optimizer = torch.optim.Adam(self.parameters(), lr=0.001, weight_decay=1e-5)
 
-        best_loss = float('inf')
-        patience = 5
-        no_improve = 0
-        best_state = None
-
-        for epoch in range(300):
+        # Train for fixed epochs (no early stopping for simplicity)
+        for epoch in range(200):
             self.train()
             optimizer.zero_grad()
-            logits = self(X_t)
-            loss = criterion(logits, y_t)
+            loss = criterion(self(X_t), y_t)
             loss.backward()
             optimizer.step()
 
-            # Валидация, если есть
-            if self._val_X is not None:
-                X_val_scaled = self._scaler.transform(self._val_X)
-                X_val_t = torch.from_numpy(X_val_scaled).float()
-                y_val_t = torch.from_numpy(self._val_y.astype(np.float32))
-                self.eval()
-                with torch.no_grad():
-                    val_logits = self(X_val_t)
-                    val_loss = criterion(val_logits, y_val_t).item()
-                if val_loss < best_loss:
-                    best_loss = val_loss
-                    no_improve = 0
-                    best_state = {k: v.clone() for k, v in self.state_dict().items()}
-                else:
-                    no_improve += 1
-                    if no_improve >= patience:
-                        if best_state is not None:
-                            self.load_state_dict(best_state)
-                        break
-                self.train()
-
         self.eval()
-        # Автоматическая настройка порога на тренировочных данных,
-        # если валидационные не были предоставлены
-        if self._val_X is None:
-            with torch.no_grad():
-                train_probs = torch.sigmoid(self(X_t)).cpu().numpy()
-            best_f1 = 0.0
-            best_thresh = 0.5
-            for thresh in np.arange(0.3, 0.71, 0.02):
-                preds = (train_probs >= thresh).astype(int)
-                f1 = f1_score(y, preds)
-                if f1 > best_f1:
-                    best_f1 = f1
-                    best_thresh = thresh
-            self._threshold = best_thresh
+        # Tune threshold on training set (or you can keep 0.5)
+        with torch.no_grad():
+            probs = torch.sigmoid(self(X_t)).cpu().numpy()
+        best_f1 = 0.0
+        best_thresh = 0.5
+        for thresh in np.arange(0.3, 0.71, 0.02):
+            preds = (probs >= thresh).astype(int)
+            f1 = f1_score(y, preds)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_thresh = thresh
+        self._threshold = best_thresh
         return self
 
     def fit_hyperparameters(self, X_val: np.ndarray, y_val: np.ndarray) -> None:
-        self._val_X = X_val.copy()
-        self._val_y = y_val.copy()
-
         X_val_scaled = self._scaler.transform(X_val)
         X_val_t = torch.from_numpy(X_val_scaled).float()
         with torch.no_grad():
-            logits = self(X_val_t)
-            probs = torch.sigmoid(logits).cpu().numpy()
-
+            probs = torch.sigmoid(self(X_val_t)).cpu().numpy()
         best_f1 = 0.0
         best_thresh = 0.5
         for thresh in np.arange(0.3, 0.71, 0.02):
