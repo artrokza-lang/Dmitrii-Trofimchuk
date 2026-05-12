@@ -11,36 +11,37 @@ def aggregate(
     hidden_states: torch.Tensor,
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Aggregate hidden states into a feature vector.
-
-    Uses mean pooling over the assistant's response tokens (masked by attention_mask)
-    and concatenates the pooled representations from the last 4 transformer layers.
-
-    Args:
-        hidden_states: (n_layers, seq_len, hidden_dim) = (25, seq_len, 896)
-        attention_mask: 1-D tensor with 1 for assistant response tokens, 0 otherwise.
-                        Originally on CPU; will be moved to the same device as hidden_states.
-
-    Returns:
-        Feature vector of shape (4 * hidden_dim,) = (3584,)
     """
-    # Ensure attention_mask is on the same device as hidden_states
+    hidden_states: (n_layers, seq_len, hidden_dim)
+    attention_mask: (seq_len,) — original padding mask from tokenizer (1 for real tokens)
+    Returns: feature vector (4 * hidden_dim,)
+    """
     device = hidden_states.device
     attention_mask = attention_mask.to(device)
 
-    # Take the last 4 layers (indices -4, -3, -2, -1)
-    layers = hidden_states[-4:]              # (4, seq_len, 896)
+    # Найдём длину реальной последовательности (без паддинга)
+    seq_len = attention_mask.sum().long().item()
+
+    # Возьмём последние 50% токенов (примерно половина — это ответ)
+    # Минимум 1 токен
+    response_len = max(1, seq_len // 2)
+    start_idx = seq_len - response_len
+
+    # Создадим маску: 1 для последних response_len токенов
+    response_mask = torch.zeros_like(attention_mask)
+    response_mask[start_idx:seq_len] = 1.0
+
+    # Используем последние 4 слоя
+    layers = hidden_states[-4:]  # (4, seq_len, 896)
 
     pooled_features = []
     for layer in layers:
-        # Zero out non-response tokens (prompt and system)
-        masked = layer * attention_mask.unsqueeze(-1)   # (seq_len, 896)
-        sum_emb = masked.sum(dim=0)                     # (896,)
-        num_tokens = attention_mask.sum().clamp(min=1)  # number of response tokens
+        masked = layer * response_mask.unsqueeze(-1)
+        sum_emb = masked.sum(dim=0)
+        num_tokens = response_mask.sum().clamp(min=1)
         mean_pooled = sum_emb / num_tokens
         pooled_features.append(mean_pooled)
 
-    # Concatenate the 4 layer vectors -> (3584,)
     return torch.cat(pooled_features)
 
 
@@ -48,8 +49,23 @@ def extract_geometric_features(
     hidden_states: torch.Tensor,
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Extract hand-crafted geometric features (not used in final solution)."""
-    return torch.zeros(0)
+    """Геометрические признаки: нормы слоёв, стандартное отклонение."""
+    device = hidden_states.device
+    attention_mask = attention_mask.to(device)
+
+    # Нормы каждого слоя (среднее по токенам)
+    norms = []
+    for layer in hidden_states:
+        # Учитываем только реальные токены
+        masked = layer * attention_mask.unsqueeze(-1)
+        sum_norm = masked.norm(dim=-1).sum()
+        num_tokens = attention_mask.sum().clamp(min=1)
+        norms.append((sum_norm / num_tokens).item())
+
+    # Стандартное отклонение норм по слоям
+    std_norm = torch.tensor(norms).std()
+
+    return torch.tensor([std_norm])
 
 
 def aggregation_and_feature_extraction(
